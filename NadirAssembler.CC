@@ -2,27 +2,43 @@
 // Debug flags for printouts
 #define DEBUG_TOKENS	1	// Prints tokens
 
+// Error codes
+#define SUCCESS		0
+#define FAIL		1
+
 // General tokens that can be resolved in one character
 #define TOK_EOF		1	// End of file
 #define TOK_COMMA	2	// ,
 #define TOK_COLON	3	// :
 #define TOK_DOT		4	// .
-#define TOK_EQUAL	5	// =
+#define TOK_ASSIGN	5	// =
 #define TOK_LEFTSB	6	// [
 #define TOK_RIGHTSB	7	// ]
 
 // Abstract tokens that are multiple characters in length
 #define TOK_IDENT	8	// Identifier (ie. Operations/Variables)
-#define TOK_STR		9	// String literal
-#define TOK_INT		10	// Integer literal
+#define TOK_STR		9	// String literal ("symbol")
+#define TOK_INT		10	// Integer literal (#symbol)
+
+/* Variables/state relating to source code being compiled. */
+class CSrc
+{
+	U8 *buf;			// Buffer for source file
+	I64 len;			// Length of buffer
+	CTok *firstTok;		// First token in the token chain
+	I64 cursor;			// Current position in file to be parsed
+	I64 line;			// Current line in the file
+	I64 lastNewLine;	// Position of last new line (for calculating column)
+};
 
 /* Token class */
 class CTok
 {
+	CTok *prev, *next;	// Previous/Next token in chain
 	I64 type;			// Type of token
-	I64 line, column;	// For returning parsing errors/debugging
+	I64 line, col;		// For returning parsing errors/debugging
 	U8 *symbol;			// Symbol/Value/String of token if applicable
-}
+};
 
 /******************************************************************************
 * DEBUG/PRINTOUT FUNCTIONS                                                    *
@@ -50,8 +66,8 @@ U0 PrintToken(CTok *tok)
 			"TOK_DOT\n";
 			return;
 
-		case TOK_EQUAL:
-			"TOK_EQUAL\n";
+		case TOK_ASSIGN:
+			"TOK_ASSIGN\n";
 			return;
 
 		case TOK_LEFTSB:
@@ -81,7 +97,7 @@ U0 PrintToken(CTok *tok)
 				return;
 
 			case TOK_INT:
-				"%d\n", *tok->symbol;
+				"%d\n", tok->symbol;
 		}
 	}
 	else
@@ -93,3 +109,128 @@ U0 PrintToken(CTok *tok)
 /******************************************************************************
 * LEXER                                                                       *
 ******************************************************************************/
+
+/* Fetches next token from source file. */
+I64 FetchToken(CSrc *src, CTok *tok)
+{
+	// Points to end of identifiers to MemCopy into symbol
+	I64 endCursor;
+	I64 strLen;
+	U8 *tempStr;
+
+	while (src->cursor < src->len)
+	{
+		switch (src->buf[src->cursor])
+		{
+			// Comment, skip ahead to next line
+			case ';':
+				while (src->buf[src->cursor] != '\n' && src->cursor < src->len)
+				{
+					src->cursor++;
+				}
+				if (src->buf[src->cursor] == '\n')
+					goto FetchToken_NewLine;
+
+				if (src->cursor >= src->len)
+					goto FetchToken_EOF;
+
+				break;
+
+			// New line, update line number and go to next character
+			case '\n':
+FetchToken_NewLine:
+				src->lastNewLine = src->cursor;
+				src->line++;
+				src->cursor++;
+				break;
+
+			// Simple single character tokens
+			case ',':
+				tok->type = TOK_COMMA;
+				goto FetchToken_SaveLineCol;
+
+			case ':':
+				tok->type = TOK_COLON;
+				goto FetchToken_SaveLineCol;
+
+			case '.':
+				tok->type = TOK_DOT;
+				goto FetchToken_SaveLineCol;
+
+			case '=':
+				tok->type = TOK_ASSIGN;
+				goto FetchToken_SaveLineCol;
+
+			case '[':
+				tok->type = TOK_LEFTSB;
+				goto FetchToken_SaveLineCol;
+
+			case ']':
+				tok->type = TOK_RIGHTSB;
+				goto FetchToken_SaveLineCol;
+
+			case '"':
+				tok->type = TOK_STR;
+				goto FetchToken_SaveLineCol;
+
+			// Integer, read in symbol and convert to binary integer
+			case '#':
+				tok->type = TOK_INT;
+				endCursor = src->cursor + 1;
+				while (endCursor < src->len)
+				{
+					switch (src->buf[endCursor])
+					{
+						case 'x':	// Hex
+						case 'o':	// Octal
+						case 'a'...'f':	// A-F for hex numbers and dec/bin ints
+						case 'A'...'F':
+						case '0'...'9':
+							endCursor++;
+							break;
+
+						// End of integer
+						default:
+							goto FetchToken_EndOfInt;
+					}
+				}
+FetchToken_EndOfInt:
+				// Convert string of int to actual int
+				strLen = endCursor - (src->cursor + 1);	// +1 to skip #
+				tempStr = CAlloc(strLen + 1);	// +1 for null terminator
+				MemCopy(tempStr, src->buf + src->cursor + 1, strLen);
+				"[INT STRING] %s\n", tempStr;
+				tok->symbol = Str2I64(tempStr);
+				src->cursor = endCursor;
+				Free(tempStr);
+				return SUCCESS;
+
+
+			// Identifier, read in symbol until a terminator like space or comma
+			case 'A'...'Z':
+			case 'a'...'z':
+			case '_':
+				tok->type = TOK_IDENT;
+				endCursor = src->cursor + 1;
+				while (endCursor < src->len)
+				{
+				
+				}
+		
+	}
+
+	tok->line = src->line;
+	tok->col = src->cursor - src->lastNewLine;
+	}
+	else
+	{
+FetchToken_EOF:
+		tok->type = TOK_EOF;
+
+FetchToken_SaveLineCol:
+		tok->line = src->line;
+		tok->col = src->cursor - src->lastNewLine;
+		src->cursor++;
+		return SUCCESS;
+	}
+}
