@@ -3,8 +3,10 @@
 #define DEBUG_TOKENS	1	// Prints tokens
 
 // Error codes
-#define SUCCESS		0
-#define FAIL		1
+#define SUCCESS				0
+#define FAIL				1
+#define FAIL_TOK_CHARINT	2	// Failure to read character int
+#define FAIL_TOK_EOF		3	// End of file before completion of token
 
 // General tokens that can be resolved in one character
 #define TOK_EOF		1	// End of file
@@ -116,6 +118,7 @@ I64 FetchToken(CSrc *src, CTok *tok)
 	// Points to end of identifiers to MemCopy into symbol
 	I64 endCursor;
 	I64 strLen;
+	I64 i;
 	U8 *tempStr;
 
 	while (src->cursor < src->len)
@@ -147,31 +150,85 @@ FetchToken_NewLine:
 			// Simple single character tokens
 			case ',':
 				tok->type = TOK_COMMA;
-				goto FetchToken_SaveLineCol;
+				goto FetchToken_SaveLineColAndInc;
 
 			case ':':
 				tok->type = TOK_COLON;
-				goto FetchToken_SaveLineCol;
+				goto FetchToken_SaveLineColAndInc;
 
 			case '.':
 				tok->type = TOK_DOT;
-				goto FetchToken_SaveLineCol;
+				goto FetchToken_SaveLineColAndInc;
 
 			case '=':
 				tok->type = TOK_ASSIGN;
-				goto FetchToken_SaveLineCol;
+				goto FetchToken_SaveLineColAndInc;
 
 			case '[':
 				tok->type = TOK_LEFTSB;
-				goto FetchToken_SaveLineCol;
+				goto FetchToken_SaveLineColAndInc;
 
 			case ']':
 				tok->type = TOK_RIGHTSB;
-				goto FetchToken_SaveLineCol;
+				goto FetchToken_SaveLineColAndInc;
 
 			case '"':
 				tok->type = TOK_STR;
-				goto FetchToken_SaveLineCol;
+				goto FetchToken_SaveLineColAndInc;
+
+			// Char integer, read in symbol and convert to binary integer
+			case '\'':
+				if (src->cursor + 2 < src->len)
+				{
+					if (src->cursor + 3 < src->len)
+					{
+						// Escape character, ie. '\n'
+						if (src->buf[src->cursor + 3] == '\'' && 
+							src->buf[src->cursor + 1] == '\\')
+						{
+							switch (src->buf[src->cursor + 2])
+							{
+								case 'n':
+									tok->symbol = '\n';
+									break;
+
+								case 't':
+									tok->symbol = '\t';
+									break;
+
+								case '\"':
+									tok->symbol = '\"';
+									break;
+
+								case '\'':
+									tok->symbol = '\'';
+									break;
+
+								case '\\':
+									tok->symbol = '\\';
+									break;
+
+								default:
+									goto FetchToken_FailCharInt;
+							}
+							src->cursor += 4;
+							goto FetchToken_SaveLineCol;
+						}
+					}
+					// Regular character, ie. 'a'
+					if (src->buf[src->cursor + 2] == '\'')
+					{
+						tok->symbol = src->buf[src->cursor + 1];
+						src->cursor += 3;
+						goto FetchToken_SaveLineCol;
+					}
+FetchToken_FailCharInt:
+					tok->line = src->line;
+					tok->col = src->cursor - src->lastNewLine;
+					return FAIL_TOK_CHARINT;
+				}
+				// End of file before completion of character integer
+				goto FetchToken_FailEOF;
 
 			// Integer, read in symbol and convert to binary integer
 			case '#':
@@ -183,7 +240,7 @@ FetchToken_NewLine:
 					{
 						case 'x':	// Hex
 						case 'o':	// Octal
-						case 'a'...'f':	// A-F for hex numbers and dec/bin ints
+						case 'a'...'f':	// A-F for hex numbers and dec/bin intsv
 						case 'A'...'F':
 						case '0'...'9':
 							endCursor++;
@@ -205,8 +262,36 @@ FetchToken_EndOfInt:
 				Free(tempStr);
 				return SUCCESS;
 
+			// String, read in symbol
+			case '\"':
+				tok->type = TOK_STR;
+				endCursor = src->cursor + 1;
+				strLen = 0;
+				while (endCursor < src->len)
+				{
+					if (src->buf[endCursor] == '\"')
+					{
+						// End of string, load into symbol and convert esc seqs
+						tok->symbol = CAlloc(strLen + 1); // +1 for null term
+						for (i = 0; i < strLen
+					}
+					else
+					{
+						if (src->buf[endCursor] == '\\')
+						{
+							if (src->buf[endCursor - 1] == 
+						}
+						else
+						{
+							strLen++;
+						}
+						endCursor++;
+					}
+				}
+				// Hit end of file before end of string
+				goto FetchToken_FailEOF;
 
-			// Identifier, read in symbol until a terminator like space or comma
+			// Identifier, read in symbol until a non-identifier character
 			case 'A'...'Z':
 			case 'a'...'z':
 			case '_':
@@ -214,23 +299,40 @@ FetchToken_EndOfInt:
 				endCursor = src->cursor + 1;
 				while (endCursor < src->len)
 				{
-				
+					switch (src->buf[endCursor])
+					{
+						case 'A'...'Z':
+						case 'a'...'z':
+						case '_':
+						case '0'...'9':
+							endCursor++;
+							break;
+					}
 				}
-		
-	}
+FetchToken_EndOfIdent:
+				strLen = endCursor - src->cursor;
+				tok->symbol = CAlloc(strLen + 1); // +1 for null terminator
+				MemCopy(tok->symbol, src->buf + src->cursor, strLen);
+				src->cursor = endCursor;
+				goto FetchToken_SaveLineCol;
+		}
 
-	tok->line = src->line;
-	tok->col = src->cursor - src->lastNewLine;
+		// No particular token detected, read next character
+		src->cursor++;		
 	}
-	else
-	{
 FetchToken_EOF:
-		tok->type = TOK_EOF;
+	tok->type = TOK_EOF;
+
+FetchToken_SaveLineColAndInc:
+	src->cursor++;
 
 FetchToken_SaveLineCol:
-		tok->line = src->line;
-		tok->col = src->cursor - src->lastNewLine;
-		src->cursor++;
-		return SUCCESS;
-	}
+	tok->line = src->line;
+	tok->col = src->cursor - src->lastNewLine;
+	return SUCCESS;
+
+FetchToken_FailEOF:
+	tok->line = src->line;
+	tok->col = src->cursor - src->lastNewLine;
+	return FAIL_TOK_EOF;
 }
