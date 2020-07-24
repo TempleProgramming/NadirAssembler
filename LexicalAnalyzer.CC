@@ -16,18 +16,20 @@
 #define TOK_ASSIGN	5	// =
 #define TOK_LEFTSB	6	// [
 #define TOK_RIGHTSB	7	// ]
+#define TOK_HASH	8	// #
+#define TOK_AT		9	// @
 
 // Abstract tokens that are multiple characters in length
-#define TOK_IDENT	8	// Identifier (ie. Operations/Variables)
-#define TOK_STR		9	// String literal ("symbol")
-#define TOK_INT		10	// Integer literal (#symbol)
+#define TOK_IDENT	10	// Identifier (ie. Operations/Variables)
+#define TOK_STR		11	// String literal ("symbol")
+#define TOK_INT		12	// Integer literal (#symbol)
 
 /* Variables/state relating to source code being compiled. */
 class CSrc
 {
 	U8 *buf;			// Buffer for source file
 	I64 len;			// Length of buffer
-	CTok *firstTok;		// First token in the token chain
+	CTok *firstTok;		// First token in token chain
 	I64 cursor;			// Current position in file to be parsed
 	I64 line;			// Current line in the file
 	I64 lastNewLine;	// Position of last new line (for calculating column)
@@ -36,7 +38,7 @@ class CSrc
 /* Token class */
 class CTok
 {
-	CTok *prev, *next;	// Previous/Next token in chain
+	CTok *prev, *next;	// Previous/Next tokens in the chain
 	I64 type;			// Type of token
 	I64 line, col;		// For returning parsing errors/debugging
 	U8 *symbol;			// Symbol/Value/String of token if applicable
@@ -76,6 +78,14 @@ U0 PrintToken(CTok *tok)
 			"TOK_LEFTSB\n";
 			return;
 
+		case TOK_HASH:
+			"TOK_HASH SYMBOL\n";
+			return;
+
+		case TOK_AT:
+			"TOK_AT SYMBOL\n";
+			return;
+
 		case TOK_IDENT:
 			"TOK_IDENT SYMBOL: ";
 			break;
@@ -87,6 +97,7 @@ U0 PrintToken(CTok *tok)
 		case TOK_INT:
 			"TOK_INT SYMBOL: ";
 			break;
+
 	}
 
 	if (tok->symbol != NULL)
@@ -108,6 +119,30 @@ U0 PrintToken(CTok *tok)
 	}
 }
 
+/* Print error codes and line/col from token fetcher. */
+U0 PrintTokenError(I64 err, CTok *tok)
+{
+	switch (err)
+	{
+		case SUCCESS:
+			return;
+
+		case FAIL:
+			"$FG,4$[ERROR] UNKNOWN ERROR AT $FG$";
+			break;
+
+		case FAIL_TOK_CHARINT:
+			"$FG,4$[ERROR] CHAR INT SYNTAX ERROR AT $FG$";
+			break;
+
+		case FAIL_TOK_EOF:
+			"$FG,4$[ERROR] END OF FILE BEFORE TOKEN COMPLETION AT $FG$";
+			break;
+	}
+
+	"$FG,4$LINE: %d COL: %d$FG$\n", tok->line, tok->col;
+}
+
 /******************************************************************************
 * LEXER                                                                       *
 ******************************************************************************/
@@ -117,8 +152,7 @@ I64 FetchToken(CSrc *src, CTok *tok)
 {
 	// Points to end of identifiers to MemCopy into symbol
 	I64 endCursor;
-	I64 strLen;
-	I64 i;
+	I64 strLen = 0;
 	U8 *tempStr;
 
 	while (src->cursor < src->len)
@@ -172,8 +206,12 @@ FetchToken_NewLine:
 				tok->type = TOK_RIGHTSB;
 				goto FetchToken_SaveLineColAndInc;
 
-			case '"':
-				tok->type = TOK_STR;
+			case '#':
+				tok->type = TOK_HASH;
+				goto FetchToken_SaveLineColAndInc;
+
+			case '@':
+				tok->type = TOK_AT;
 				goto FetchToken_SaveLineColAndInc;
 
 			// Char integer, read in symbol and convert to binary integer
@@ -231,7 +269,7 @@ FetchToken_FailCharInt:
 				goto FetchToken_FailEOF;
 
 			// Integer, read in symbol and convert to binary integer
-			case '#':
+			case '0'...'9':
 				tok->type = TOK_INT;
 				endCursor = src->cursor + 1;
 				while (endCursor < src->len)
@@ -253,42 +291,36 @@ FetchToken_FailCharInt:
 				}
 FetchToken_EndOfInt:
 				// Convert string of int to actual int
-				strLen = endCursor - (src->cursor + 1);	// +1 to skip #
+				strLen = endCursor - src->cursor;
 				tempStr = CAlloc(strLen + 1);	// +1 for null terminator
-				MemCopy(tempStr, src->buf + src->cursor + 1, strLen);
-				"[INT STRING] %s\n", tempStr;
+				MemCopy(tempStr, src->buf + src->cursor, strLen);
 				tok->symbol = Str2I64(tempStr);
 				src->cursor = endCursor;
 				Free(tempStr);
-				return SUCCESS;
+				goto FetchToken_SaveLineCol;
 
 			// String, read in symbol
+			// TODO - Add escape sequence support
 			case '\"':
 				tok->type = TOK_STR;
 				endCursor = src->cursor + 1;
-				strLen = 0;
 				while (endCursor < src->len)
 				{
 					if (src->buf[endCursor] == '\"')
 					{
-						// End of string, load into symbol and convert esc seqs
+						// End of string, load into symbol
+						strLen = endCursor - src->cursor - 1; // Ignore last "
 						tok->symbol = CAlloc(strLen + 1); // +1 for null term
-						for (i = 0; i < strLen
+						MemCopy(tok->symbol, tok->buf + 1, strLen);
+						src->cursor = endCursor + 1;
+						goto FetchToken_SaveLineCol;
 					}
 					else
 					{
-						if (src->buf[endCursor] == '\\')
-						{
-							if (src->buf[endCursor - 1] == 
-						}
-						else
-						{
-							strLen++;
-						}
 						endCursor++;
 					}
 				}
-				// Hit end of file before end of string
+				// Hit end of file before end of string
 				goto FetchToken_FailEOF;
 
 			// Identifier, read in symbol until a non-identifier character
@@ -307,6 +339,10 @@ FetchToken_EndOfInt:
 						case '0'...'9':
 							endCursor++;
 							break;
+
+						// End of identifier
+						default:
+							goto FetchToken_EndOfIdent;
 					}
 				}
 FetchToken_EndOfIdent:
